@@ -2,9 +2,9 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 
 import pyarrow as pa
 import pydantic
@@ -815,6 +815,60 @@ def test_enum_types():
     assert schema.field("priority").type == pa.int64()
     assert schema.field("opt_status").type == pa.dictionary(pa.int32(), pa.utf8())
     assert schema.field("opt_status").nullable
+
+
+def test_literal_types():
+    """Literal fields map to the Arrow type of their (homogeneous) values."""
+
+    class TestModel(pydantic.BaseModel):
+        kind: Literal["a", "b"]
+        level: Literal[1, 2, 3]
+        flag: Literal[True]
+        opt_kind: Optional[Literal["x", "y"]] = None
+
+    schema = pydantic_to_schema(TestModel)
+
+    assert schema.field("kind").type == pa.utf8()
+    assert schema.field("level").type == pa.int64()
+    assert schema.field("flag").type == pa.bool_()
+    assert schema.field("opt_kind").type == pa.utf8()
+    assert schema.field("opt_kind").nullable
+
+
+def test_literal_with_mixed_value_types_is_rejected():
+    class TestModel(pydantic.BaseModel):
+        kind: Literal["a", 1]
+
+    with pytest.raises(TypeError, match="unsupported type"):
+        pydantic_to_schema(TestModel)
+
+
+def test_aware_and_naive_datetime_types():
+    class TestModel(pydantic.BaseModel):
+        naive: pydantic.NaiveDatetime
+        aware: pydantic.AwareDatetime
+        aware_tz: pydantic.AwareDatetime = Field(
+            json_schema_extra={"tz": "Asia/Shanghai"}
+        )
+
+    schema = pydantic_to_schema(TestModel)
+
+    assert schema.field("naive").type == pa.timestamp("us")
+    assert schema.field("aware").type == pa.timestamp("us", tz="UTC")
+    assert schema.field("aware_tz").type == pa.timestamp("us", tz="Asia/Shanghai")
+
+
+def test_aware_datetime_round_trip(mem_db):
+    class TestModel(LanceModel):
+        id: int
+        t: pydantic.AwareDatetime
+
+    table = mem_db.create_table("aware_dt", schema=TestModel)
+    value = datetime(2020, 1, 2, 12, tzinfo=timezone(timedelta(hours=5)))
+    table.add([TestModel(id=1, t=value)])
+
+    (row,) = table.search().to_pydantic(TestModel)
+    assert row.t == value
 
 
 def test_plain_enum_values_are_written(mem_db):

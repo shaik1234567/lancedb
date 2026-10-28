@@ -15,10 +15,13 @@ from typing import (
     TYPE_CHECKING,
     Any,
     List,
+    Literal,
     Type,
     Union,
     _GenericAlias,
     GenericAlias,
+    get_args,
+    get_origin,
 )
 
 import pyarrow as pa
@@ -290,6 +293,19 @@ def _pydantic_type_to_arrow_type(tp: Any, field: FieldInfo) -> pa.DataType:
         except TypeError:
             return False
 
+    if tp is pydantic.NaiveDatetime:
+        return pa.timestamp("us")
+    if tp is pydantic.AwareDatetime:
+        return pa.timestamp("us", tz=get_extras(field, "tz") or "UTC")
+    if get_origin(tp) is Literal:
+        # A Literal maps to the Arrow type of its values, which must agree.
+        value_types = {type(value) for value in get_args(tp)}
+        if len(value_types) == 1 and value_types <= {str, int, bool}:
+            return _py_type_to_arrow_type(value_types.pop(), field)
+        raise TypeError(
+            f"Converting Pydantic type to Arrow Type: unsupported type {tp}. "
+            "All Literal values must be str, int or bool, and of the same type."
+        )
     if inspect.isclass(tp):
         if _safe_issubclass(tp, pydantic.BaseModel):
             # Struct
